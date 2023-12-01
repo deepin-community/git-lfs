@@ -1,0 +1,2 @@
+# Upstream does not provide gpg signed releases
+debian-watch-does-not-check-openpgp-signature

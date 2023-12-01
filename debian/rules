@@ -1,4 +1,25 @@
 #!/usr/bin/make -f
 
+export DH_OPTIONS
+
+BUILD_DIR := obj-$(DEB_BUILD_GNU_TYPE)
+export DH_GOLANG_EXCLUDES := test vendor
+export DH_GOLANG_GO_GENERATE := 1
+export DH_GOLANG_INSTALL_EXTRA := git/githistory/fixtures tq/schemas locking/schemas docs/man
+export PATH := $(CURDIR)/$(BUILD_DIR)/bin:$(PATH)
+
 %:
-	dh $@
+	dh $@ --buildsystem=golang --with=golang
+
+override_dh_clean:
+	rm -rf man
+	dh_clean
+
+override_dh_auto_build:
+	dh_auto_build
+	rm -f $(BUILD_DIR)/bin/script
+	rm -f $(BUILD_DIR)/bin/man
+	rm -f $(BUILD_DIR)/bin/cmd
+	rm -f $(BUILD_DIR)/bin/trgen
+	mkdir man
+	asciidoctor -b manpage -D man/ docs/man/*.adoc
