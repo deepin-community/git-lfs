@@ -18,15 +18,21 @@ import (
 func (f *GitFilter) SmudgeToFile(filename string, ptr *Pointer, download bool, manifest tq.Manifest, cb tools.CopyCallback) error {
 	tools.MkdirAll(filepath.Dir(filename), f.cfg)
 
-	if stat, _ := os.Stat(filename); stat != nil && stat.Mode()&0200 == 0 {
-		if err := os.Chmod(filename, stat.Mode()|0200); err != nil {
-			return errors.Wrap(err,
-				tr.Tr.Get("Could not restore write permission"))
+	if stat, _ := os.Stat(filename); stat != nil {
+		if ptr.Size == 0 && stat.Size() == 0 {
+			return nil
 		}
 
-		// When we're done, return the file back to its normal
-		// permission bits.
-		defer os.Chmod(filename, stat.Mode())
+		if stat.Mode()&0200 == 0 {
+			if err := os.Chmod(filename, stat.Mode()|0200); err != nil {
+				return errors.Wrap(err,
+					tr.Tr.Get("Could not restore write permission"))
+			}
+
+			// When we're done, return the file back to its normal
+			// permission bits.
+			defer os.Chmod(filename, stat.Mode())
+		}
 	}
 
 	abs, err := filepath.Abs(filename)
@@ -111,6 +117,7 @@ func (f *GitFilter) downloadFile(writer io.Writer, ptr *Pointer, workingfile, me
 	q := tq.NewTransferQueue(tq.Download, manifest, f.cfg.Remote(),
 		tq.WithProgressCallback(cb),
 		tq.RemoteRef(f.RemoteRef()),
+		tq.WithBatchSize(f.cfg.TransferBatchSize()),
 	)
 	q.Add(filepath.Base(workingfile), mediafile, ptr.Oid, ptr.Size, false, nil)
 	q.Wait()
@@ -142,6 +149,7 @@ func (f *GitFilter) downloadFileFallBack(writer io.Writer, ptr *Pointer, working
 		q := tq.NewTransferQueue(tq.Download, manifest, remote,
 			tq.WithProgressCallback(cb),
 			tq.RemoteRef(f.RemoteRef()),
+			tq.WithBatchSize(f.cfg.TransferBatchSize()),
 		)
 		q.Add(filepath.Base(workingfile), mediafile, ptr.Oid, ptr.Size, false, nil)
 		q.Wait()
