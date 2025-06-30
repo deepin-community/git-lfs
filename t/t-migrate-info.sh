@@ -240,6 +240,17 @@ begin_test "migrate info (include/exclude ref with filter)"
 )
 end_test
 
+begin_test "migrate info (invalid ref)"
+(
+  set -e
+  remove_and_create_local_repo "migrate-info-invalid-ref"
+  git commit --allow-empty -m "initial commit"
+
+  git lfs migrate info jibberish >migrate.log 2>&1 && exit 1
+  grep "can't resolve ref" migrate.log
+)
+end_test
+
 begin_test "migrate info (nested sub-trees, no filter)"
 (
   set -e
@@ -282,7 +293,7 @@ begin_test "migrate info (above threshold, top)"
 
   setup_multiple_local_branches
 
-  base64 < /dev/urandom | head -c 160 > b.bin
+  lfstest-genrandom --base64 160 >b.bin
   git add b.bin
   git commit -m "b.bin"
 
@@ -305,7 +316,7 @@ begin_test "migrate info (top)"
 
   setup_multiple_local_branches
 
-  base64 < /dev/urandom | head -c 160 > b.bin
+  lfstest-genrandom --base64 160 >b.bin
   git add b.bin
   git commit -m "b.bin"
 
@@ -507,7 +518,7 @@ begin_test "migrate info (no potential fixup, --fixup, .gitattributes with macro
   setup_multiple_local_branches
 
   echo "[attr]foo foo" >.gitattributes
-  base64 < /dev/urandom | head -c 30 > a.md
+  lfstest-genrandom --base64 30 >a.md
   git add .gitattributes a.md
   git commit -m macro
 

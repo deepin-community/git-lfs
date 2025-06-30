@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 
@@ -53,11 +54,27 @@ func (credWrapper *CredentialHelperWrapper) FillCreds() error {
 // as input.
 type Creds map[string][]string
 
-func bufferCreds(c Creds) *bytes.Buffer {
+func (c Creds) IsMultistage() bool {
+	return slices.Contains([]string{"1", "true"}, FirstEntryForKey(c, "continue"))
+}
+
+func (c Creds) buffer(protectProtocol bool) (*bytes.Buffer, error) {
 	buf := new(bytes.Buffer)
 
+	buf.Write([]byte("capability[]=authtype\n"))
+	buf.Write([]byte("capability[]=state\n"))
 	for k, v := range c {
 		for _, item := range v {
+			if strings.Contains(item, "\n") {
+				return nil, errors.Errorf(tr.Tr.Get("credential value for %s contains newline: %q", k, item))
+			}
+			if protectProtocol && strings.Contains(item, "\r") {
+				return nil, errors.Errorf(tr.Tr.Get("credential value for %s contains carriage return: %q\nIf this is intended, set `credential.protectProtocol=false`", k, item))
+			}
+			if strings.Contains(item, string(rune(0))) {
+				return nil, errors.Errorf(tr.Tr.Get("credential value for %s contains null byte: %q", k, item))
+			}
+
 			buf.Write([]byte(k))
 			buf.Write([]byte("="))
 			buf.Write([]byte(item))
@@ -65,7 +82,7 @@ func bufferCreds(c Creds) *bytes.Buffer {
 		}
 	}
 
-	return buf
+	return buf, nil
 }
 
 type CredentialHelperContext struct {
@@ -76,6 +93,7 @@ type CredentialHelperContext struct {
 
 	urlConfig      *config.URLConfig
 	wwwAuthHeaders []string
+	state          []string
 }
 
 func NewCredentialHelperContext(gitEnv config.Environment, osEnv config.Environment) *CredentialHelperContext {
@@ -118,6 +136,10 @@ func (ctxt *CredentialHelperContext) SetWWWAuthHeaders(headers []string) {
 	ctxt.wwwAuthHeaders = headers
 }
 
+func (ctxt *CredentialHelperContext) SetStateFields(fields []string) {
+	ctxt.state = fields
+}
+
 // getCredentialHelper parses a 'credsConfig' from the git and OS environments,
 // returning the appropriate CredentialHelper to authenticate requests with.
 //
@@ -134,6 +156,9 @@ func (ctxt *CredentialHelperContext) GetCredentialHelper(helper CredentialHelper
 	}
 	if len(ctxt.wwwAuthHeaders) != 0 && !ctxt.urlConfig.Bool("credential", rawurl, "skipwwwauth", false) {
 		input["wwwauth[]"] = ctxt.wwwAuthHeaders
+	}
+	if len(ctxt.state) != 0 {
+		input["state[]"] = ctxt.state
 	}
 
 	if helper != nil {
@@ -153,6 +178,9 @@ func (ctxt *CredentialHelperContext) GetCredentialHelper(helper CredentialHelper
 			helpers = append(helpers, ctxt.askpassCredHelper)
 		}
 	}
+
+	ctxt.commandCredHelper.protectProtocol = ctxt.urlConfig.Bool("credential", rawurl, "protectProtocol", true)
+
 	return CredentialHelperWrapper{CredentialHelper: NewCredentialHelpers(append(helpers, ctxt.commandCredHelper)), Input: input, Url: u}
 }
 
@@ -184,9 +212,9 @@ const (
 // provided, i.e. through the git URL
 func (a *AskPassCredentialHelper) Fill(what Creds) (Creds, error) {
 	u := &url.URL{
-		Scheme: firstEntryForKey(what, "protocol"),
-		Host:   firstEntryForKey(what, "host"),
-		Path:   firstEntryForKey(what, "path"),
+		Scheme: FirstEntryForKey(what, "protocol"),
+		Host:   FirstEntryForKey(what, "host"),
+		Path:   FirstEntryForKey(what, "path"),
 	}
 
 	creds := make(Creds)
@@ -292,14 +320,15 @@ func (a *AskPassCredentialHelper) args(prompt string) []string {
 }
 
 type commandCredentialHelper struct {
-	SkipPrompt bool
+	SkipPrompt      bool
+	protectProtocol bool
 }
 
 func (h *commandCredentialHelper) Fill(creds Creds) (Creds, error) {
 	tracerx.Printf("creds: git credential fill (%q, %q, %q)",
-		firstEntryForKey(creds, "protocol"),
-		firstEntryForKey(creds, "host"),
-		firstEntryForKey(creds, "path"))
+		FirstEntryForKey(creds, "protocol"),
+		FirstEntryForKey(creds, "host"),
+		FirstEntryForKey(creds, "path"))
 	return h.exec("fill", creds)
 }
 
@@ -310,9 +339,9 @@ func (h *commandCredentialHelper) Reject(creds Creds) error {
 
 func (h *commandCredentialHelper) Approve(creds Creds) error {
 	tracerx.Printf("creds: git credential approve (%q, %q, %q)",
-		firstEntryForKey(creds, "protocol"),
-		firstEntryForKey(creds, "host"),
-		firstEntryForKey(creds, "path"))
+		FirstEntryForKey(creds, "protocol"),
+		FirstEntryForKey(creds, "host"),
+		FirstEntryForKey(creds, "path"))
 	_, err := h.exec("approve", creds)
 	return err
 }
@@ -323,7 +352,10 @@ func (h *commandCredentialHelper) exec(subcommand string, input Creds) (Creds, e
 	if err != nil {
 		return nil, errors.New(tr.Tr.Get("failed to find `git credential %s`: %v", subcommand, err))
 	}
-	cmd.Stdin = bufferCreds(input)
+	cmd.Stdin, err = input.buffer(h.protectProtocol)
+	if err != nil {
+		return nil, errors.New(tr.Tr.Get("invalid input to `git credential %s`: %v", subcommand, err))
+	}
 	cmd.Stdout = output
 	/*
 	   There is a reason we don't read from stderr here:
@@ -345,7 +377,7 @@ func (h *commandCredentialHelper) exec(subcommand string, input Creds) (Creds, e
 	if _, ok := err.(*exec.ExitError); ok {
 		if h.SkipPrompt {
 			return nil, errors.New(tr.Tr.Get("change the GIT_TERMINAL_PROMPT env var to be prompted to enter your credentials for %s://%s",
-				firstEntryForKey(input, "protocol"), firstEntryForKey(input, "host")))
+				FirstEntryForKey(input, "protocol"), FirstEntryForKey(input, "host")))
 		}
 
 		// 'git credential' exits with 128 if the helper doesn't fill the username
@@ -386,9 +418,9 @@ func NewCredentialCacher() *credentialCacher {
 
 func credCacheKey(creds Creds) string {
 	parts := []string{
-		firstEntryForKey(creds, "protocol"),
-		firstEntryForKey(creds, "host"),
-		firstEntryForKey(creds, "path"),
+		FirstEntryForKey(creds, "protocol"),
+		FirstEntryForKey(creds, "host"),
+		FirstEntryForKey(creds, "path"),
 	}
 	return strings.Join(parts, "//")
 }
@@ -401,9 +433,9 @@ func (c *credentialCacher) Fill(what Creds) (Creds, error) {
 
 	if ok {
 		tracerx.Printf("creds: git credential cache (%q, %q, %q)",
-			firstEntryForKey(what, "protocol"),
-			firstEntryForKey(what, "host"),
-			firstEntryForKey(what, "path"))
+			FirstEntryForKey(what, "protocol"),
+			FirstEntryForKey(what, "host"),
+			FirstEntryForKey(what, "path"))
 		return cached, nil
 	}
 
@@ -572,7 +604,9 @@ func (h *nullCredentialHelper) Reject(creds Creds) error {
 	return nil
 }
 
-func firstEntryForKey(input Creds, key string) string {
+// FirstEntryForKey extracts and returns the first entry for a given key, or
+// returns the empty string if no value for that key is available.
+func FirstEntryForKey(input Creds, key string) string {
 	if val, ok := input[key]; ok && len(val) > 0 {
 		return val[0]
 	}
