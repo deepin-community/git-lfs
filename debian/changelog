@@ -1,3 +1,9 @@
+git-lfs (3.6.1-1+deb13u1) trixie; urgency=medium
+
+  * CVE-2025-26625 (Closes: #1118339)
+
+ -- Moritz Mühlenhoff <jmm@debian.org>  Fri, 10 Apr 2026 17:17:50 +0200
+
 git-lfs (3.6.1-1) unstable; urgency=medium
 
   * New upstream release
